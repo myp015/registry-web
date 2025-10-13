@@ -146,3 +146,4 @@ For example **read-all** role matches any IP and any image name with glob `*` an
 ### [Configuration reference](https://github.com/mkuchin/docker-registry-web/blob/master/web-app/WEB-INF/config.yml)
 
 ### [Docker Compose configuration examples](https://github.com/mkuchin/docker-registry-web/tree/master/examples)
+# registry-web
