@@ -1,60 +1,52 @@
-FROM    ubuntu:14.04
+# ===============================
+# 基于官方 Tomcat 9 + JDK 8
+# 修复 Docker Registry 2.8+ SSL 验证问题
+# ===============================
 
-ENV DEBIAN_FRONTEND noninteractive
-#prevent apt from installing recommended packages
-RUN echo 'APT::Install-Recommends "false";' > /etc/apt/apt.conf.d/docker-no-recommends && \
-    echo 'APT::Install-Suggests "false";' >> /etc/apt/apt.conf.d/docker-no-recommends
+FROM tomcat:9-jdk8
 
-# Install java and tomcat
-RUN     apt-get update && apt-get install -y tomcat7 openjdk-7-jdk libyaml-perl libfile-slurp-perl && \
-        rm -rf /var/lib/tomcat7/webapps/* && \
-        rm -rf /var/lib/apt/lists/*
+# 设置 Tomcat 环境变量
+ENV CATALINA_HOME=/usr/local/tomcat
+ENV CATALINA_BASE=/usr/local/tomcat
+ENV CATALINA_OPTS="-Djava.security.egd=file:/dev/./urandom -Djdk.tls.client.protocols=TLSv1.2 -Dhttps.protocols=TLSv1.2"
+ENV PATH=$CATALINA_HOME/bin:$PATH
 
-ENV     JAVA_HOME /usr/lib/jvm/java-7-openjdk-amd64
-ENV     CATALINA_HOME /usr/share/tomcat7
-ENV     CATALINA_BASE /var/lib/tomcat7
+# 删除默认 webapps
+RUN rm -rf $CATALINA_HOME/webapps/*
 
-ENV CATALINA_OPTS=" -Djava.security.egd=file:/dev/./urandom"
-ENV PATH $CATALINA_HOME/bin:$PATH
+# 安装系统依赖及 Java SSL 证书更新工具
+RUN apt-get update && \
+    apt-get install -y ca-certificates-java libyaml-perl libfile-slurp-perl unzip wget && \
+    update-ca-certificates -f && \
+    rm -rf /var/lib/apt/lists/*
 
+# 复制 Tomcat 配置及启动脚本
 COPY tomcat/server.xml $CATALINA_BASE/conf/
 COPY web-app/WEB-INF/config.yml /conf/config.yml
-WORKDIR /usr/local/bin/
-COPY tomcat/yml.pl ./
-COPY tomcat/start.sh ./
+COPY tomcat/start.sh /usr/local/bin/start.sh
+COPY tomcat/yml.pl /usr/local/bin/yml.pl
 
-# fix missing folders in tomcat
-RUN     mkdir $CATALINA_BASE/temp && \
-        mkdir -p $CATALINA_HOME/common/classes && \
-        mkdir -p $CATALINA_HOME/server/classes && \
-        mkdir -p $CATALINA_HOME/shared/classes
-
-# Run grails wrapper to install grails and project dependencies
 WORKDIR /usr/local/app
-COPY     grailsw application.properties ./
-COPY     wrapper ./wrapper
-COPY     grails-app/conf/BuildConfig.groovy ./grails-app/conf/
-RUN     ./grailsw refresh-dependencies
 
-# Building app
-
+# 复制 Grails 项目源码
+COPY grailsw application.properties ./
+COPY wrapper ./wrapper
+COPY grails-app/conf/BuildConfig.groovy ./grails-app/conf/
+COPY grails-app/controllers/docker/registry/web/RepositoryController.groovy ./grails-app/controllers/docker/registry/web/RepositoryController.groovy
 ADD . ./
-# copy master in case of master branch and HEAD in case of tag
-RUN if [ -f .git/refs/heads/master ]; then  cat .git/refs/heads/master; else cat .git/HEAD; fi > version
-# adding commit hash
-RUN cat version >> application.properties
 
-RUN ./grailsw test-app unit: -echoOut && \
+# ⚙️ 刷新 Grails 依赖 & 构建 WAR
+RUN ./grailsw refresh-dependencies && \
     ./grailsw war ROOT.war && \
-    cp application.properties $CATALINA_BASE/ && \
-    cp ROOT.war $CATALINA_BASE/webapps/ && \
-# clean up
+    cp ROOT.war $CATALINA_HOME/webapps/ && \
+    cp application.properties $CATALINA_HOME/ && \
+    # 清理缓存
     rm -rf /usr/local/app && \
-    rm -rf /root/.grails  && \
+    rm -rf /root/.grails && \
     rm -rf /root/.m2
 
-WORKDIR $CATALINA_BASE
+WORKDIR $CATALINA_HOME
 VOLUME /data
 EXPOSE 8080
 
-CMD ["start.sh"]
+CMD ["/usr/local/bin/start.sh"]

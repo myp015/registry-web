@@ -1,5 +1,5 @@
 <Server port="8005" shutdown="SHUTDOWN">
-    <Listener className="org.apache.catalina.core.JasperListener"/>
+	<!-- <Listener className="org.apache.catalina.core.JasperListener" /> -->
     <!-- Prevent memory leaks due to use of particular java/javax APIs-->
     <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener"/>
     <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener"/>
