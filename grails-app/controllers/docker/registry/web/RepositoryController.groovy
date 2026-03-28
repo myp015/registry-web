@@ -88,18 +88,18 @@ class RepositoryController {
             def childResp = childDigest ? restService.get("${name}/manifests/${childDigest}", restService.generateAccess(name), true) : null
             def childOk = childResp?.statusCode?.'2xxSuccessful'
             def childJson = childOk ? childResp.json : null
-            buildTagEntry(tag, childJson, true, platformString(child?.platform), childDigest)
+            buildTagEntry(name, tag, childJson, true, platformString(child?.platform), childDigest)
           }
         }
       }
 
       // Single-arch or fallback: one row
       def resolvedManifest = resolveSchema2Manifest(name, json)
-      [buildTagEntry(tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), null)]
+      [buildTagEntry(name, tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), null)]
     }
   }
 
-  private Map buildTagEntry(String tag, def manifestJson, boolean exists, String platform = '-', String digest = null) {
+  private Map buildTagEntry(String repoName, String tag, def manifestJson, boolean exists, String platform = '-', String digest = null) {
     def topLayer
     def size = 0
     def layers = [:]
@@ -119,6 +119,10 @@ class RepositoryController {
     }
 
     def createdStr = topLayer?.created
+    if (!createdStr && manifestJson?.config?.digest) {
+      def cfg = fetchConfigBlob(repoName, manifestJson.config.digest)
+      createdStr = cfg?.created ?: cfg?.history?.find { it?.created }?.created
+    }
     def createdDate = DateConverter.convert(createdStr)
     long unixTime = createdDate?.time ?: 0
 
@@ -227,6 +231,37 @@ class RepositoryController {
     clean.substring(0, Math.min(clean.length(), 11))
   }
 
+  private def fetchConfigBlob(String name, String digest) {
+    try {
+      if (!name || !digest) return null
+      def resp = restService.get("${name}/blobs/${digest}", restService.generateAccess(name), true)
+      return resp?.statusCode?.'2xxSuccessful' ? resp?.json : null
+    } catch (e) {
+      log.debug "Unable to fetch config blob for ${name}@${digest}", e
+      return null
+    }
+  }
+
+  private String renderCmdFromHistoryEntry(def json) {
+    def cmdList = json?.container_config?.Cmd ?: json?.config?.Cmd
+    if (cmdList instanceof Collection && cmdList) {
+      return cmdList.join(' ').replaceAll('&&', '&&\n')
+    }
+    if (cmdList instanceof String) {
+      return cmdList.replaceAll('&&', '&&\n')
+    }
+    def createdBy = json?.created_by
+    if (createdBy) {
+      return createdBy.toString().replaceAll('&&', '&&\n')
+    }
+    return '(n/a)'
+  }
+
+  private String renderCmdFromLayer(def layer) {
+    // OCI/Docker v2 layer has no direct command string; provide digest hint.
+    return "layer ${shortDigest(layer?.digest)}"
+  }
+
   private List getTagList(name) {
     restService.get("${name}/tags/list", restService.generateAccess(name)).json?.tags ?: []
   }
@@ -244,7 +279,7 @@ class RepositoryController {
     if (manifest?.history?.v1Compatibility) {
       history = manifest.history.v1Compatibility.collect { jsonValue ->
         def json = new JsonSlurper().parseText(jsonValue)
-        [id: json.id?.substring(0, 11), cmd: (json?.container_config?.Cmd?.last() ?: '').replaceAll('&&', '&&\n')]
+        [id: json.id?.substring(0, 11), cmd: renderCmdFromHistoryEntry(json)]
       }
 
       def blobs = manifest.fsLayers?.collect { it.blobSum } ?: []
@@ -256,7 +291,7 @@ class RepositoryController {
     } else if (manifest?.layers) {
       // schema v2 / OCI without v1Compatibility history
       history = manifest.layers.collect { layer ->
-        [id: shortDigest(layer.digest), cmd: '(schema v2/oci layer)', size: (layer.size ?: 0)]
+        [id: shortDigest(layer.digest), cmd: renderCmdFromLayer(layer), size: (layer.size ?: 0)]
       }
     }
 
