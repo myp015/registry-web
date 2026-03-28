@@ -440,4 +440,22 @@ class RepositoryController {
     }
     redirect action: 'tags', id: params.id
   }
+
+  def runGc() {
+    String name = params.id.decodeURL()
+
+    if (!readonly && authService.checkLocalDeletePermissions(name)) {
+      flash.success = true
+      flash.message = "GC action acknowledged for ${name}. Please run registry garbage-collect on backend registry host to reclaim blob storage."
+    } else if (readonly) {
+      flash.success = false
+      flash.message = "Readonly mode! GC operation requires write-enabled admin mode."
+    } else {
+      flash.success = false
+      flash.message = "GC not allowed! Current user does not have ui-delete permission."
+    }
+
+    flash.deleteAction = true
+    redirect action: 'tags', id: params.id
+  }
 }

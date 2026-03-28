@@ -13,7 +13,7 @@
 
             <div class="modal-footer">
                 <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-                <a class="btn btn-danger btn-ok">Delete</a>
+                <a class="btn ${okClass ?: 'btn-danger'} btn-ok">${okText ?: 'Delete'}</a>
             </div>
         </div>
     </div>

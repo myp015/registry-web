@@ -19,18 +19,25 @@
 </head>
 
 <body>
-<g:modal id="deleteTag" title="Confirm Delete Tag" fields="['tag', 'id']">
+<g:modal id="deleteTag" title="Confirm Delete Tag" fields="['tag', 'id']" okText="Delete Tag" okClass="btn-danger">
     <p>You are about to delete tag <strong id="tag"></strong> and all images with id <strong id="id"></strong>.</p>
     <p><strong>Repository:</strong> ${params.id.decodeURL()}</p>
     <p>Do you want to proceed?</p>
 </g:modal>
 
-<g:modal id="deleteDigest" title="Confirm Delete Image (Digest)" fields="['repo', 'tag', 'digest']">
+<g:modal id="deleteDigest" title="Confirm Delete Image (Digest)" fields="['repo', 'tag', 'digest']" okText="Delete Image" okClass="btn-danger">
     <p>You are about to delete image manifest by digest.</p>
     <p><strong>Repository:</strong> <code id="repo"></code></p>
     <p><strong>Tag:</strong> <code id="tag"></code></p>
     <p><strong>Digest:</strong> <code id="digest"></code></p>
     <p>This deletes registry metadata immediately. Disk blobs are removed only after GC.</p>
+</g:modal>
+
+<g:modal id="runGc" title="Confirm Run Registry Garbage Collection" fields="['repo']" okText="Run GC" okClass="btn-warning">
+    <p>You are about to run Registry GC for current backend registry.</p>
+    <p><strong>Repository scope (UI):</strong> <code id="repo"></code></p>
+    <p>GC permanently removes unreferenced blobs. This may impact active pushes/pulls.</p>
+    <p>Recommended: run during maintenance window.</p>
 </g:modal>
 <div class="row">
     <g:header title='Tags'>
@@ -38,6 +45,13 @@
         <li class="active">${params.id.decodeURL()}</li>
     </g:header>
     <div class="col-md-12">
+        <g:if test="${!readonly}">
+            <div style="margin-bottom: 12px;">
+                <a class="btn btn-warning" href="#" data-repo="${params.id.decodeURL()}"
+                   data-href="${g.createLink(action: 'runGc', params: [id: params.id])}"
+                   data-toggle="modal" data-target="#runGc">Run GC</a>
+            </div>
+        </g:if>
         <g:if test="${flash.deleteAction}">
             <div class="alert alert-${flash.success ? 'success' : 'danger'}" role="alert">
                 ${raw(flash.message)}
