@@ -395,6 +395,49 @@ class RepositoryController {
       flash.message = "Readonly mode!"
     }
     flash.deleteAction = true
+    flash.success = !flash.message
+    if (!flash.message) {
+      flash.message = "Delete tag request accepted for ${name}:${tag}. Blob files are removed after registry garbage-collect (GC)."
+    }
+    redirect action: 'tags', id: params.id
+  }
+
+  def deleteDigest() {
+    String name = params.id.decodeURL()
+    def tag = params.name
+    def digest = params.digest
+
+    if (!readonly) {
+      if (!digest) {
+        flash.message = "Missing digest for delete operation"
+      } else if (authService.checkLocalDeletePermissions(name)) {
+        log.info "Deleting manifest by digest: ${digest} from ${name}"
+        def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
+        if (!result.deleted) {
+          def text = ''
+          try {
+            boolean unsupported = result.response.json.errors[0].code == 'UNSUPPORTED'
+            text = unsupported ? "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>." : result.text
+          } catch (e) {
+            log.warn "Error deleting by digest", e
+            text = result.text
+          }
+          flash.message = "Error deleting ${name}@${digest}: ${text}"
+        }
+      } else {
+        log.warn 'Delete by digest not allowed!'
+        flash.message = "Delete not allowed!"
+      }
+    } else {
+      log.warn 'Readonly mode!'
+      flash.message = "Readonly mode!"
+    }
+
+    flash.deleteAction = true
+    flash.success = !flash.message
+    if (!flash.message) {
+      flash.message = "Delete image request accepted for ${name}:${tag} (${digest}). Blob files are removed after registry garbage-collect (GC)."
+    }
     redirect action: 'tags', id: params.id
   }
 }

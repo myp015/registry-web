@@ -19,10 +19,18 @@
 </head>
 
 <body>
-<g:modal id="deleteTag" title="Confirm Delete" fields="['tag', 'id']">
+<g:modal id="deleteTag" title="Confirm Delete Tag" fields="['tag', 'id']">
     <p>You are about to delete tag <strong id="tag"></strong> and all images with id <strong id="id"></strong>.</p>
-
+    <p><strong>Repository:</strong> ${params.id.decodeURL()}</p>
     <p>Do you want to proceed?</p>
+</g:modal>
+
+<g:modal id="deleteDigest" title="Confirm Delete Image (Digest)" fields="['repo', 'tag', 'digest']">
+    <p>You are about to delete image manifest by digest.</p>
+    <p><strong>Repository:</strong> <code id="repo"></code></p>
+    <p><strong>Tag:</strong> <code id="tag"></code></p>
+    <p><strong>Digest:</strong> <code id="digest"></code></p>
+    <p>This deletes registry metadata immediately. Disk blobs are removed only after GC.</p>
 </g:modal>
 <div class="row">
     <g:header title='Tags'>
@@ -52,7 +60,8 @@
                     <th>Layers</th>
                     <th>Size</th>
                     <g:if test="${!readonly}">
-                        <th>Delete</th>
+                        <th>Delete Tag</th>
+                        <th>Delete Image</th>
                     </g:if>
                 </tr>
                 </thead>
@@ -79,7 +88,15 @@
                                 <td>
                                     <a href="#" data-tag="${tag.name}" data-id="${tag.id}"
                                        data-href="${g.createLink(action: 'delete', params: [id: params.id, name: tag.name])}"
-                                       data-toggle="modal" data-target="#deleteTag">Delete</a>
+                                       data-toggle="modal" data-target="#deleteTag">Delete Tag</a>
+                                </td>
+                                <td>
+                                    <a href="#"
+                                       data-repo="${params.id.decodeURL()}"
+                                       data-tag="${tag.name}"
+                                       data-digest="${tag.manifestDigest ?: tag.digest}"
+                                       data-href="${g.createLink(action: 'deleteDigest', params: [id: params.id, name: tag.name, digest: (tag.manifestDigest ?: tag.digest)])}"
+                                       data-toggle="modal" data-target="#deleteDigest">Delete Image</a>
                                 </td>
                             </g:if>
                         </tr>
