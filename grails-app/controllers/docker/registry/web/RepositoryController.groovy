@@ -67,54 +67,85 @@ class RepositoryController {
 
   private def getTags(name, List tagList = null) {
     def sourceTags = (tagList ?: getTagList(name)).findAll { it }
-    sourceTags.collect { tag ->
-      def manifest = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true)
-      def manifestOk = manifest.statusCode.'2xxSuccessful'
-      def resolvedManifest = manifestOk ? resolveSchema2Manifest(name, manifest.json) : null
 
-      def topLayer
-      def size = 0
-      def layers = [:]
-      if (resolvedManifest) {
-        try {
-          def v1Compat = resolvedManifest?.history?.first()?.v1Compatibility
-          if (v1Compat) {
-            topLayer = new JsonSlurper().parseText(v1Compat)
-          }
-        } catch (e) {
-          log.debug "No v1Compatibility available for ${name}:${tag}"
-        }
-
-        layers = getLayersFromManifestJson(name, resolvedManifest)
-        size = layers ? layers.collect { it.value }.sum() : 0
+    sourceTags.collectMany { tag ->
+      def manifestResp = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true)
+      def manifestOk = manifestResp.statusCode.'2xxSuccessful'
+      if (!manifestOk || !manifestResp.json) {
+        return [[name: tag, exists: false, readable: false, platform: '-', digest: null, digestShort: null, count: 0, size: 0, id: '-', created: null, createdStr: null, unixTime: 0]]
       }
 
-      def createdStr = topLayer?.created
-      def createdDate = DateConverter.convert(createdStr)
-      long unixTime = createdDate?.time ?: 0
+      def json = manifestResp.json
+      // Multi-arch manifest list / OCI index: expand one row per real platform
+      if (isManifestIndex(json)) {
+        def children = (json.manifests ?: []).findAll {
+          isRealPlatform(it?.platform)
+        }
 
-      // Tag existence comes from /tags/list, not manifest details.
-      [
-        name    : tag,
-        count   : layers?.size() ?: 0,
-        size    : size,
-        exists  : true,
-        id      : topLayer?.id?.substring(0, 11) ?: shortDigest(resolvedManifest?.config?.digest),
-        created : createdDate,
-        createdStr: createdStr,
-        unixTime: unixTime,
-        readable: manifestOk
-      ]
+        if (children) {
+          return children.collect { child ->
+            def childDigest = child?.digest
+            def childResp = childDigest ? restService.get("${name}/manifests/${childDigest}", restService.generateAccess(name), true) : null
+            def childOk = childResp?.statusCode?.'2xxSuccessful'
+            def childJson = childOk ? childResp.json : null
+            buildTagEntry(tag, childJson, true, platformString(child?.platform), childDigest)
+          }
+        }
+      }
+
+      // Single-arch or fallback: one row
+      def resolvedManifest = resolveSchema2Manifest(name, json)
+      [buildTagEntry(tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), null)]
     }
+  }
+
+  private Map buildTagEntry(String tag, def manifestJson, boolean exists, String platform = '-', String digest = null) {
+    def topLayer
+    def size = 0
+    def layers = [:]
+
+    if (manifestJson) {
+      try {
+        def v1Compat = manifestJson?.history?.first()?.v1Compatibility
+        if (v1Compat) {
+          topLayer = new JsonSlurper().parseText(v1Compat)
+        }
+      } catch (e) {
+        log.debug "No v1Compatibility available for ${tag}"
+      }
+
+      layers = getLayersFromManifestJson(manifestJson)
+      size = layers ? layers.collect { it.value }.sum() : 0
+    }
+
+    def createdStr = topLayer?.created
+    def createdDate = DateConverter.convert(createdStr)
+    long unixTime = createdDate?.time ?: 0
+
+    def effectiveDigest = digest ?: manifestJson?.config?.digest
+    [
+      name      : tag,
+      count     : layers?.size() ?: 0,
+      size      : size,
+      exists    : exists,
+      id        : topLayer?.id?.substring(0, 11) ?: shortDigest(effectiveDigest),
+      created   : createdDate,
+      createdStr: createdStr,
+      unixTime  : unixTime,
+      readable  : manifestJson != null,
+      platform  : platform ?: '-',
+      digest    : effectiveDigest,
+      digestShort: shortDigest(effectiveDigest)
+    ]
   }
 
   private def getLayers(String name, String tag) {
     def json = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true).json
     def resolved = resolveSchema2Manifest(name, json)
-    getLayersFromManifestJson(name, resolved)
+    getLayersFromManifestJson(resolved)
   }
 
-  private def getLayersFromManifestJson(String name, def json) {
+  private def getLayersFromManifestJson(def json) {
     if (json?.schemaVersion == 2 && json?.layers) {
       return json.layers.collectEntries { [it.digest, it.size as BigInteger] }
     }
@@ -167,6 +198,29 @@ class RepositoryController {
     json
   }
 
+  private boolean isManifestIndex(def json) {
+    (json?.schemaVersion == 2 && json?.manifests)
+  }
+
+  private boolean isRealPlatform(def p) {
+    if (!p) return false
+    p.os && p.architecture && !(p.os == 'unknown' || p.architecture == 'unknown')
+  }
+
+  private String platformString(def p) {
+    if (!p?.os || !p?.architecture) return '-'
+    "${p.os}/${p.architecture}"
+  }
+
+  private String detectPlatformFromManifest(def originalJson, def resolvedManifest) {
+    // If we resolved from index to a child manifest, platform may not be present in child;
+    // keep generic marker for legacy single manifest cases.
+    if (originalJson?.platform?.os && originalJson?.platform?.architecture) {
+      return platformString(originalJson.platform)
+    }
+    return '-'
+  }
+
   private String shortDigest(String digest) {
     if (!digest) return null
     def clean = digest.contains(':') ? digest.split(':', 2)[1] : digest
@@ -180,7 +234,10 @@ class RepositoryController {
   def tag() {
     def name = params.id.decodeURL()
     def tag = params.name
-    def res = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true).json
+    def digest = params.digest
+    def target = digest ?: tag
+
+    def res = restService.get("${name}/manifests/${target}", restService.generateAccess(name), true).json
     def manifest = resolveSchema2Manifest(name, res)
 
     def history = []
@@ -191,10 +248,10 @@ class RepositoryController {
       }
 
       def blobs = manifest.fsLayers?.collect { it.blobSum } ?: []
-      def layers = getLayersFromManifestJson(name, manifest)
+      def layers = getLayersFromManifestJson(manifest)
       history.eachWithIndex { entry, i ->
-        def digest = blobs[i]
-        entry.size = layers[digest] ?: 0
+        def d = blobs[i]
+        entry.size = layers[d] ?: 0
       }
     } else if (manifest?.layers) {
       // schema v2 / OCI without v1Compatibility history
@@ -203,7 +260,13 @@ class RepositoryController {
       }
     }
 
-    [history: history, totalSize: history.sum { it.size ?: 0 }, registryName: registryName]
+    [
+      history    : history,
+      totalSize  : history.sum { it.size ?: 0 },
+      registryName: registryName,
+      platform   : params.platform,
+      digest     : digest
+    ]
   }
 
   def delete() {

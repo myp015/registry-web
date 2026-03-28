@@ -43,7 +43,14 @@
         <div class="table-responsive">
             <table class="table table-bordered table-hover" id="main">
                 <thead>
-                <tr><th>Id</th><th>Tag</th><th>Created</th><th>Layers</th><th>Size</th>
+                <tr>
+                    <th>Id</th>
+                    <th>Tag</th>
+                    <th>Created</th>
+                    <th>Platform</th>
+                    <th>Digest</th>
+                    <th>Layers</th>
+                    <th>Size</th>
                     <g:if test="${!readonly}">
                         <th>Delete</th>
                     </g:if>
@@ -52,19 +59,28 @@
                 <tbody>
                 <g:each in="${tags}" var="tag">
                     <g:if test="${tag.exists}">
-                        <tr><td>${tag.id}</td>
-                            <td><g:link action="tag" params="[name: tag.name]"
-                                        id="${params.id}">${tag.name}</g:link></td>
-                            <td data-sort="${tag.unixTime}"><abbr title="${tag.createdStr}"><prettytime:display
-                                    date="${tag.created}"/></abbr></td>
-                            <td>${tag.count}</td>
-                            <td data-sort="${tag.size}"><g:formatSize value="${tag.size}"/></td>
+                        <tr>
+                            <td>${tag.id ?: '-'}</td>
+                            <td>
+                                <g:link action="tag" params="[name: tag.name, digest: tag.digest, platform: tag.platform]"
+                                        id="${params.id}">${tag.name}</g:link>
+                            </td>
+                            <td data-sort="${tag.unixTime}">
+                                <g:if test="${tag.created}">
+                                    <abbr title="${tag.createdStr}"><prettytime:display date="${tag.created}"/></abbr>
+                                </g:if>
+                                <g:else>-</g:else>
+                            </td>
+                            <td>${tag.platform ?: '-'}</td>
+                            <td><code>${tag.digestShort ?: '-'}</code></td>
+                            <td>${tag.count ?: 0}</td>
+                            <td data-sort="${tag.size ?: 0}"><g:formatSize value="${tag.size ?: 0}"/></td>
                             <g:if test="${!readonly}">
                                 <td>
                                     <a href="#" data-tag="${tag.name}" data-id="${tag.id}"
                                        data-href="${g.createLink(action: 'delete', params: [id: params.id, name: tag.name])}"
-                                       data-toggle="modal" data-target="#deleteTag">Delete</a></td>
-
+                                       data-toggle="modal" data-target="#deleteTag">Delete</a>
+                                </td>
                             </g:if>
                         </tr>
                     </g:if>
