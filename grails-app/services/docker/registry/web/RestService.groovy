@@ -16,8 +16,15 @@ class RestService {
 
   def tokenService
   def headers = [:]
-  //v2 manifest header to get correct digest for docker 1.10
-  def v2header = ['Accept': 'application/vnd.docker.distribution.manifest.v2+json']
+  // Accept modern manifest types (single-arch + multi-arch index/list)
+  // so tags backed by manifest lists (amd64/arm64) can be read correctly.
+  def v2header = ['Accept': [
+      'application/vnd.oci.image.index.v1+json',
+      'application/vnd.docker.distribution.manifest.list.v2+json',
+      'application/vnd.oci.image.manifest.v1+json',
+      'application/vnd.docker.distribution.manifest.v2+json',
+      'application/vnd.docker.distribution.manifest.v1+json'
+  ].join(', ')]
 
   List generateAccess(String name, String action = 'pull', String type = 'repository') {
     [[type: type, name: name, actions: [action]]]

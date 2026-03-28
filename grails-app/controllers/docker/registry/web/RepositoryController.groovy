@@ -51,46 +51,76 @@ class RepositoryController {
 
   def tags() {
     String name = params.id.decodeURL()
-    def tags = getTags(name)
-    if (!tags.count { it.exists }) {
-      log.warn "Repo name: ${name} is empty, redirecting to home page"
+    def tagList = getTagList(name)
+
+    if (!tagList) {
+      log.warn "Repo name: ${name} has no tags, redirecting to home page"
       redirect action: 'index'
-    } else {
-      def deletePermitted = authService.checkLocalDeletePermissions(name)
-      [tags: tags, readonly: readonly || !deletePermitted, registryName: registryName]
+      return
     }
+
+    def tags = getTags(name, tagList)
+    def deletePermitted = authService.checkLocalDeletePermissions(name)
+    [tags: tags, readonly: readonly || !deletePermitted, registryName: registryName]
   }
 
 
-  private def getTags(name) {
-    def tags = getTagList(name).findAll { it }.collect { tag ->
-      def manifest = restService.get("${name}/manifests/${tag}", restService.generateAccess(name))
-      def exists = manifest.statusCode.'2xxSuccessful'
+  private def getTags(name, List tagList = null) {
+    def sourceTags = (tagList ?: getTagList(name)).findAll { it }
+    sourceTags.collect { tag ->
+      def manifest = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true)
+      def manifestOk = manifest.statusCode.'2xxSuccessful'
+      def resolvedManifest = manifestOk ? resolveSchema2Manifest(name, manifest.json) : null
+
       def topLayer
       def size = 0
-      def layers
-      if (exists) {
-        topLayer = new JsonSlurper().parseText(manifest.json.history.first().v1Compatibility)
-        layers = getLayers(name, tag)
-        size = layers.collect { it.value }.sum()
+      def layers = [:]
+      if (resolvedManifest) {
+        try {
+          def v1Compat = resolvedManifest?.history?.first()?.v1Compatibility
+          if (v1Compat) {
+            topLayer = new JsonSlurper().parseText(v1Compat)
+          }
+        } catch (e) {
+          log.debug "No v1Compatibility available for ${name}:${tag}"
+        }
+
+        layers = getLayersFromManifestJson(name, resolvedManifest)
+        size = layers ? layers.collect { it.value }.sum() : 0
       }
 
       def createdStr = topLayer?.created
       def createdDate = DateConverter.convert(createdStr)
       long unixTime = createdDate?.time ?: 0
 
-      [name: tag, count: layers?.size(), size: size, exists: exists, id: topLayer?.id?.substring(0, 11), created: createdDate, createdStr: createdStr, unixTime: unixTime]
+      // Tag existence comes from /tags/list, not manifest details.
+      [
+        name    : tag,
+        count   : layers?.size() ?: 0,
+        size    : size,
+        exists  : true,
+        id      : topLayer?.id?.substring(0, 11) ?: shortDigest(resolvedManifest?.config?.digest),
+        created : createdDate,
+        createdStr: createdStr,
+        unixTime: unixTime,
+        readable: manifestOk
+      ]
     }
-    tags
   }
 
   private def getLayers(String name, String tag) {
     def json = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true).json
+    def resolved = resolveSchema2Manifest(name, json)
+    getLayersFromManifestJson(name, resolved)
+  }
 
-    if (json.schemaVersion == 2)
+  private def getLayersFromManifestJson(String name, def json) {
+    if (json?.schemaVersion == 2 && json?.layers) {
       return json.layers.collectEntries { [it.digest, it.size as BigInteger] }
-    else {
-      //fallback to manifest schema v1
+    }
+
+    if (json?.history && json?.fsLayers) {
+      // fallback to manifest schema v1
       def history = json.history.v1Compatibility.collect { jsonValue ->
         new JsonSlurper().parseText(jsonValue)
       }
@@ -105,6 +135,42 @@ class RepositoryController {
         [it.digest, it.size as BigInteger]
       }
     }
+
+    [:]
+  }
+
+  // Resolve a manifest-list / OCI index to a concrete image manifest.
+  private def resolveSchema2Manifest(String name, def json) {
+    if (!(json?.schemaVersion == 2)) {
+      return json
+    }
+
+    if (json?.layers) {
+      return json
+    }
+
+    if (json?.manifests) {
+      def picked = json.manifests.find {
+        it?.platform?.os == 'linux' && it?.platform?.architecture == 'amd64'
+      } ?: json.manifests.find {
+        it?.platform?.os == 'linux'
+      } ?: json.manifests.first()
+
+      if (picked?.digest) {
+        def child = restService.get("${name}/manifests/${picked.digest}", restService.generateAccess(name), true)
+        if (child.statusCode.'2xxSuccessful') {
+          return child.json
+        }
+      }
+    }
+
+    json
+  }
+
+  private String shortDigest(String digest) {
+    if (!digest) return null
+    def clean = digest.contains(':') ? digest.split(':', 2)[1] : digest
+    clean.substring(0, Math.min(clean.length(), 11))
   }
 
   private List getTagList(name) {
@@ -114,21 +180,30 @@ class RepositoryController {
   def tag() {
     def name = params.id.decodeURL()
     def tag = params.name
-    def res = restService.get("${name}/manifests/${tag}", restService.generateAccess(name)).json
-    def history = res.history.v1Compatibility.collect { jsonValue ->
-      def json = new JsonSlurper().parseText(jsonValue)
-	  [id: json.id?.substring(0, 11), cmd: (json?.container_config?.Cmd?.last() ?: '').replaceAll('&&', '&&\n')]
+    def res = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true).json
+    def manifest = resolveSchema2Manifest(name, res)
 
+    def history = []
+    if (manifest?.history?.v1Compatibility) {
+      history = manifest.history.v1Compatibility.collect { jsonValue ->
+        def json = new JsonSlurper().parseText(jsonValue)
+        [id: json.id?.substring(0, 11), cmd: (json?.container_config?.Cmd?.last() ?: '').replaceAll('&&', '&&\n')]
+      }
+
+      def blobs = manifest.fsLayers?.collect { it.blobSum } ?: []
+      def layers = getLayersFromManifestJson(name, manifest)
+      history.eachWithIndex { entry, i ->
+        def digest = blobs[i]
+        entry.size = layers[digest] ?: 0
+      }
+    } else if (manifest?.layers) {
+      // schema v2 / OCI without v1Compatibility history
+      history = manifest.layers.collect { layer ->
+        [id: shortDigest(layer.digest), cmd: '(schema v2/oci layer)', size: (layer.size ?: 0)]
+      }
     }
 
-    def blobs = res.fsLayers.collect { it.blobSum }
-    def layers = getLayers(name, tag)
-    history.eachWithIndex { entry, i ->
-      def digest = blobs[i]
-      entry.size = layers[digest] ?: 0
-    }
-
-    [history: history, totalSize: history.sum { it.size }, registryName: registryName]
+    [history: history, totalSize: history.sum { it.size ?: 0 }, registryName: registryName]
   }
 
   def delete() {
