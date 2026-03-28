@@ -62,7 +62,7 @@
                         <tr>
                             <td>${tag.id ?: '-'}</td>
                             <td>
-                                <g:link action="tag" params="[name: tag.name, digest: tag.digest, platform: tag.platform]"
+                                <g:link action="tag" params="[name: tag.name, digest: tag.digest, manifestDigest: tag.manifestDigest, platform: tag.platform]"
                                         id="${params.id}">${tag.name}</g:link>
                             </td>
                             <td data-sort="${tag.unixTime}">

@@ -1,17 +1,27 @@
 package docker.registry.web
 
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Date
 
 class DateConverter {
-  private static final format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 
-  static def convert(String date) {
-    // docker uses ISO8601 dates w/ fractional seconds (i.e. yyyy-MM-ddTHH:mm:ss.ssssssssZ),
-    // which seem to confuse the Date parser, so truncate the timestamp and always assume UTC tz.
-    if (date) {
-      def dateSubstring = date?.substring(0, 19)
-      return format.parse(dateSubstring)
-    } else
+  static Date convert(String date) {
+    if (!date) {
       return null
+    }
+
+    try {
+      // Handles docker timestamps like: 2026-03-28T13:27:28.123662Z
+      return Date.from(Instant.parse(date))
+    } catch (ignored) {
+      try {
+        // Fallback for offsets like +08:00
+        return Date.from(OffsetDateTime.parse(date, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toInstant())
+      } catch (ignored2) {
+        return null
+      }
+    }
   }
 }

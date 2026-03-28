@@ -72,7 +72,7 @@ class RepositoryController {
       def manifestResp = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true)
       def manifestOk = manifestResp.statusCode.'2xxSuccessful'
       if (!manifestOk || !manifestResp.json) {
-        return [[name: tag, exists: false, readable: false, platform: '-', digest: null, digestShort: null, count: 0, size: 0, id: '-', created: null, createdStr: null, unixTime: 0]]
+        return [[name: tag, exists: false, readable: false, platform: '-', digest: null, manifestDigest: null, digestShort: null, count: 0, size: 0, id: '-', created: null, createdStr: null, unixTime: 0]]
       }
 
       def json = manifestResp.json
@@ -88,18 +88,18 @@ class RepositoryController {
             def childResp = childDigest ? restService.get("${name}/manifests/${childDigest}", restService.generateAccess(name), true) : null
             def childOk = childResp?.statusCode?.'2xxSuccessful'
             def childJson = childOk ? childResp.json : null
-            buildTagEntry(name, tag, childJson, true, platformString(child?.platform), childDigest)
+            buildTagEntry(name, tag, childJson, true, platformString(child?.platform), childJson?.config?.digest, childDigest)
           }
         }
       }
 
       // Single-arch or fallback: one row
       def resolvedManifest = resolveSchema2Manifest(name, json)
-      [buildTagEntry(name, tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), null)]
+      [buildTagEntry(name, tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), resolvedManifest?.config?.digest, manifestDigestFromHeaders(manifestResp))]
     }
   }
 
-  private Map buildTagEntry(String repoName, String tag, def manifestJson, boolean exists, String platform = '-', String digest = null) {
+  private Map buildTagEntry(String repoName, String tag, def manifestJson, boolean exists, String platform = '-', String digest = null, String manifestDigest = null) {
     def topLayer
     def size = 0
     def layers = [:]
@@ -118,15 +118,20 @@ class RepositoryController {
       size = layers ? layers.collect { it.value }.sum() : 0
     }
 
+    def cfg = null
     def createdStr = topLayer?.created
     if (!createdStr && manifestJson?.config?.digest) {
-      def cfg = fetchConfigBlob(repoName, manifestJson.config.digest)
+      cfg = fetchConfigBlob(repoName, manifestJson.config.digest)
       createdStr = cfg?.created ?: cfg?.history?.find { it?.created }?.created
     }
     def createdDate = DateConverter.convert(createdStr)
     long unixTime = createdDate?.time ?: 0
 
     def effectiveDigest = digest ?: manifestJson?.config?.digest
+    def effectiveManifestDigest = manifestDigest
+    if (!effectiveManifestDigest && manifestJson?.config?.digest) {
+      effectiveManifestDigest = lookupManifestDigestByConfig(repoName, tag, manifestJson.config.digest)
+    }
     [
       name      : tag,
       count     : layers?.size() ?: 0,
@@ -139,6 +144,7 @@ class RepositoryController {
       readable  : manifestJson != null,
       platform  : platform ?: '-',
       digest    : effectiveDigest,
+      manifestDigest: effectiveManifestDigest,
       digestShort: shortDigest(effectiveDigest)
     ]
   }
@@ -234,12 +240,43 @@ class RepositoryController {
   private def fetchConfigBlob(String name, String digest) {
     try {
       if (!name || !digest) return null
-      def resp = restService.get("${name}/blobs/${digest}", restService.generateAccess(name), true)
+      // blob endpoint is not manifest-specific; do NOT force v2 Accept header here.
+      def resp = restService.get("${name}/blobs/${digest}", restService.generateAccess(name), false)
       return resp?.statusCode?.'2xxSuccessful' ? resp?.json : null
     } catch (e) {
       log.debug "Unable to fetch config blob for ${name}@${digest}", e
       return null
     }
+  }
+
+  private String manifestDigestFromHeaders(def resp) {
+    try {
+      resp?.responseEntity?.headers?.getFirst('Docker-Content-Digest')
+    } catch (e) {
+      null
+    }
+  }
+
+  private String lookupManifestDigestByConfig(String name, String tag, String configDigest) {
+    try {
+      if (!name || !tag || !configDigest) return null
+      def listResp = restService.get("${name}/manifests/${tag}", restService.generateAccess(name), true)
+      def listJson = listResp?.json
+      if (isManifestIndex(listJson)) {
+        def candidates = (listJson.manifests ?: []).findAll { isRealPlatform(it?.platform) }
+        for (def c : candidates) {
+          def d = c?.digest
+          if (!d) continue
+          def child = restService.get("${name}/manifests/${d}", restService.generateAccess(name), true)
+          if (child?.statusCode?.'2xxSuccessful' && child?.json?.config?.digest == configDigest) {
+            return d
+          }
+        }
+      }
+    } catch (e) {
+      log.debug "Unable to lookup manifest digest for ${name}:${tag} by config ${configDigest}", e
+    }
+    return null
   }
 
   private String renderCmdFromHistoryEntry(def json) {
@@ -270,9 +307,11 @@ class RepositoryController {
     def name = params.id.decodeURL()
     def tag = params.name
     def digest = params.digest
-    def target = digest ?: tag
+    def manifestDigest = params.manifestDigest
+    def target = manifestDigest ?: digest ?: tag
 
-    def res = restService.get("${name}/manifests/${target}", restService.generateAccess(name), true).json
+    def resResp = restService.get("${name}/manifests/${target}", restService.generateAccess(name), true)
+    def res = resResp.json
     def manifest = resolveSchema2Manifest(name, res)
 
     def history = []
@@ -290,8 +329,22 @@ class RepositoryController {
       }
     } else if (manifest?.layers) {
       // schema v2 / OCI without v1Compatibility history
-      history = manifest.layers.collect { layer ->
-        [id: shortDigest(layer.digest), cmd: renderCmdFromLayer(layer), size: (layer.size ?: 0)]
+      def cfg = manifest?.config?.digest ? fetchConfigBlob(name, manifest.config.digest) : null
+      def cfgHistory = cfg?.history instanceof Collection ? cfg.history : []
+      if (cfgHistory) {
+        history = cfgHistory.collect { h ->
+          [id: shortDigest(h?.created_by ?: manifest?.config?.digest), cmd: (h?.created_by ?: '(n/a)').toString().replaceAll('&&', '&&\n'), size: 0]
+        }
+        // approximate size attribution: align last N layers to last N history entries
+        def layers = manifest.layers ?: []
+        def n = Math.min(history.size(), layers.size())
+        for (int i = 0; i < n; i++) {
+          history[history.size() - n + i].size = (layers[i]?.size ?: 0)
+        }
+      } else {
+        history = manifest.layers.collect { layer ->
+          [id: shortDigest(layer.digest), cmd: renderCmdFromLayer(layer), size: (layer.size ?: 0)]
+        }
       }
     }
 
@@ -300,7 +353,8 @@ class RepositoryController {
       totalSize  : history.sum { it.size ?: 0 },
       registryName: registryName,
       platform   : params.platform,
-      digest     : digest
+      digest     : digest,
+      manifestDigest: manifestDigest
     ]
   }
 
