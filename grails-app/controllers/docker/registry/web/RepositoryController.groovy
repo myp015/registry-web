@@ -11,6 +11,9 @@ class RepositoryController {
   @Value('${registry.name}')
   String registryName
 
+  @Value('${registry.gc.command:}')
+  String gcCommand
+
   def restService
   def authService
 
@@ -444,15 +447,49 @@ class RepositoryController {
   def runGc() {
     String name = params.id.decodeURL()
 
-    if (!readonly && authService.checkLocalDeletePermissions(name)) {
-      flash.success = true
-      flash.message = "GC action acknowledged for ${name}. Please run registry garbage-collect on backend registry host to reclaim blob storage."
-    } else if (readonly) {
+    if (readonly) {
       flash.success = false
       flash.message = "Readonly mode! GC operation requires write-enabled admin mode."
-    } else {
+      flash.deleteAction = true
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    if (!authService.checkLocalDeletePermissions(name)) {
       flash.success = false
       flash.message = "GC not allowed! Current user does not have ui-delete permission."
+      flash.deleteAction = true
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    if (!gcCommand) {
+      flash.success = false
+      flash.message = "GC command is not configured. Set REGISTRY_GC_COMMAND to execute registry garbage-collect automatically."
+      flash.deleteAction = true
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    try {
+      log.info "Executing GC command: ${gcCommand}"
+      def proc = ["/bin/sh", "-lc", gcCommand].execute()
+      def stdout = new StringBuffer()
+      def stderr = new StringBuffer()
+      proc.consumeProcessOutput(stdout, stderr)
+      proc.waitFor()
+      def exit = proc.exitValue()
+      if (exit == 0) {
+        flash.success = true
+        flash.message = "GC executed successfully for ${name}.\n${stdout.toString().trim()}"
+      } else {
+        flash.success = false
+        flash.message = "GC failed for ${name} (exit ${exit}).\n${stderr.toString().trim()}"
+      }
+    } catch (e) {
+      flash.success = false
+      flash.message = "GC execution error for ${name}: ${e.message}"
+      log.warn 'GC execution error', e
     }
 
     flash.deleteAction = true

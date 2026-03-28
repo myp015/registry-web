@@ -39,6 +39,12 @@
     <p>GC permanently removes unreferenced blobs. This may impact active pushes/pulls.</p>
     <p>Recommended: run during maintenance window.</p>
 </g:modal>
+
+<g:if test="${!readonly}">
+    <div class="alert alert-info" role="alert" style="margin: 12px 0;">
+        GC button will execute the configured backend command. Make sure <code>REGISTRY_GC_COMMAND</code> is set.
+    </div>
+</g:if>
 <div class="row">
     <g:header title='Tags'>
         <li><g:link action="index">Home</g:link></li>
