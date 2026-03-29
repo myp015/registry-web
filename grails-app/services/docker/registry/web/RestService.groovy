@@ -49,8 +49,9 @@ class RestService {
     request(HttpMethod.GET, "${url}/${path}" as String, v2 ? headers + v2header : headers, access)
   }
 
-  def delete(String path, List access) {
-    def res = request(HttpMethod.DELETE, "${url}/${path}", headers, access)
+  def delete(String path, List access, boolean v2 = false) {
+    def reqHeaders = v2 ? headers + v2header : headers
+    def res = request(HttpMethod.DELETE, "${url}/${path}", reqHeaders, access)
     log.info res.statusCode
     [deleted: res.statusCode.'2xxSuccessful', response: res]
   }

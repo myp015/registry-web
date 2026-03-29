@@ -178,6 +178,20 @@ Risky command example:
 This may remove child platform manifests (`linux/amd64`, `linux/arm64`) while tag/index still exists,
 causing UI entries with `0 layers / 0 size` or pull failures.
 
+#### Tag deletion behavior (important)
+
+Registry v2 commonly deletes by **manifest digest**. If multiple tags reference the same digest,
+deleting one tag by digest removes all tags that reference it.
+
+`registry-web` now applies safer logic:
+
+1. Try tag-reference delete first (`DELETE .../manifests/<tag>`)
+2. If backend doesn't support tag-only delete:
+   - if digest is shared by multiple tags, block deletion and show warning
+   - if digest is unique, fallback to digest delete
+
+This avoids accidental removal of all tags that point to the same image.
+
 #### Running GC with docker exec
 
 If your command uses `docker exec` from inside `registry-web`, make sure:

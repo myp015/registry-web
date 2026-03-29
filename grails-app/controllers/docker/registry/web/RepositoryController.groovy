@@ -291,6 +291,20 @@ class RepositoryController {
     return null
   }
 
+  private List<String> findTagsByManifestDigest(String name, String digest) {
+    if (!name || !digest) return []
+    def tags = getTagList(name)
+    tags.findAll { t ->
+      try {
+        def r = restService.get("${name}/manifests/${t}", restService.generateAccess(name), true)
+        def d = manifestDigestFromHeaders(r)
+        d == digest
+      } catch (ignored) {
+        false
+      }
+    }
+  }
+
   private String renderCmdFromHistoryEntry(def json) {
     def cmdList = json?.container_config?.Cmd ?: json?.config?.Cmd
     if (cmdList instanceof Collection && cmdList) {
@@ -373,39 +387,72 @@ class RepositoryController {
   def delete() {
     String name = params.id.decodeURL()
     def tag = params.name
-    if (!readonly) {
-      def manifest = restService.get("${name}/manifests/${tag}", restService.generateAccess(name, 'pull'), true)
-      def digest = manifest.responseEntity.headers.getFirst('Docker-Content-Digest')
-      log.info "Manifest digest: $digest"
-      /*
-    def blobSums = manifest.json.fsLayers?.blobSum
-    blobSums.each { digest ->
-      log.info "Deleting blob: ${digest}"
-      restService.delete("${name}/blobs/${digest}")
-    }
-    */
-      if (authService.checkLocalDeletePermissions(name)) {
-        log.info "Deleting manifest"
-        def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
-        if (!result.deleted) {
-          def text = ''
-          try {
-            boolean unsupported = result.response.json.errors[0].code == 'UNSUPPORTED'
-            text = unsupported ? "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>." : result.text
-          } catch (e) {
-            log.warn "Error deleting", e
-            text = result.text
-          }
-          flash.message = "Error deleting ${name}:${tag}: ${text}"
-        }
-      } else {
-        log.warn 'Delete not allowed!'
-        flash.message = "Delete not allowed!"
-      }
-    } else {
+
+    if (readonly) {
       log.warn 'Readonly mode!'
       flash.message = "Readonly mode!"
+      flash.deleteAction = true
+      flash.success = false
+      redirect action: 'tags', id: params.id
+      return
     }
+
+    if (!authService.checkLocalDeletePermissions(name)) {
+      log.warn 'Delete not allowed!'
+      flash.message = "Delete not allowed!"
+      flash.deleteAction = true
+      flash.success = false
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    def manifest = restService.get("${name}/manifests/${tag}", restService.generateAccess(name, 'pull'), true)
+    def digest = manifest?.responseEntity?.headers?.getFirst('Docker-Content-Digest')
+    log.info "Delete tag requested: ${name}:${tag}, digest=${digest}"
+
+    // 1) Try true tag-delete first (OCI/distribution extensions may support DELETE by tag ref)
+    def deleteByTag = restService.delete("${name}/manifests/${tag}", restService.generateAccess(name, '*'), true)
+    if (deleteByTag.deleted) {
+      flash.deleteAction = true
+      flash.success = true
+      flash.message = "Delete tag request accepted for ${name}:${tag}. Tag reference removed."
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    if (!digest) {
+      flash.deleteAction = true
+      flash.success = false
+      flash.message = "Unable to resolve manifest digest for ${name}:${tag}. Tag-only delete unsupported by backend and digest fallback is unavailable."
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    // 2) If delete-by-tag is unsupported and digest is shared by multiple tags, block destructive digest delete.
+    def referencedTags = findTagsByManifestDigest(name, digest)
+    if ((referencedTags?.size() ?: 0) > 1) {
+      flash.deleteAction = true
+      flash.success = false
+      flash.message = "Cannot delete only tag ${name}:${tag}: backend registry does not support tag-only delete, and digest ${digest} is shared by tags ${referencedTags.join(', ')}. Deleting digest would remove all of them."
+      redirect action: 'tags', id: params.id
+      return
+    }
+
+    // 3) Fallback: digest delete (legacy behavior) only when digest is not shared.
+    log.info "Fallback to digest delete: ${name}@${digest}"
+    def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
+    if (!result.deleted) {
+      def text = ''
+      try {
+        boolean unsupported = result.response.json.errors[0].code == 'UNSUPPORTED'
+        text = unsupported ? "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>." : result.text
+      } catch (e) {
+        log.warn "Error deleting", e
+        text = result.text
+      }
+      flash.message = "Error deleting ${name}:${tag}: ${text}"
+    }
+
     flash.deleteAction = true
     flash.success = !flash.message
     if (!flash.message) {
