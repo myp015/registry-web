@@ -40,11 +40,6 @@
     <p>Recommended: run during maintenance window.</p>
 </g:modal>
 
-<g:if test="${!readonly}">
-    <div class="alert alert-info" role="alert" style="margin: 12px 0;">
-        GC button will execute the configured backend command. Make sure <code>REGISTRY_GC_COMMAND</code> is set.
-    </div>
-</g:if>
 <div class="row">
     <g:header title='Tags'>
         <li><g:link action="index">Home</g:link></li>
@@ -86,8 +81,10 @@
                 </tr>
                 </thead>
                 <tbody>
+                <% def renderedDeleteImageDigests = [] as Set %>
                 <g:each in="${tags}" var="tag">
                     <g:if test="${tag.exists}">
+                        <% def imageDigest = (tag.manifestDigest ?: tag.digest) %>
                         <tr>
                             <td>${tag.id ?: '-'}</td>
                             <td>
@@ -111,12 +108,16 @@
                                        data-toggle="modal" data-target="#deleteTag">Delete Tag</a>
                                 </td>
                                 <td>
-                                    <a href="#"
-                                       data-repo="${params.id.decodeURL()}"
-                                       data-tag="${tag.name}"
-                                       data-digest="${tag.manifestDigest ?: tag.digest}"
-                                       data-href="${g.createLink(action: 'deleteDigest', params: [id: params.id, name: tag.name, digest: (tag.manifestDigest ?: tag.digest)])}"
-                                       data-toggle="modal" data-target="#deleteDigest">Delete Image</a>
+                                    <g:if test="${imageDigest && !renderedDeleteImageDigests.contains(imageDigest)}">
+                                        <% renderedDeleteImageDigests << imageDigest %>
+                                        <a href="#"
+                                           data-repo="${params.id.decodeURL()}"
+                                           data-tag="${tag.name}"
+                                           data-digest="${imageDigest}"
+                                           data-href="${g.createLink(action: 'deleteDigest', params: [id: params.id, name: tag.name, digest: imageDigest])}"
+                                           data-toggle="modal" data-target="#deleteDigest">Delete Image</a>
+                                    </g:if>
+                                    <g:else>-</g:else>
                                 </td>
                             </g:if>
                         </tr>
