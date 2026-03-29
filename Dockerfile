@@ -14,9 +14,9 @@ ENV PATH=$CATALINA_HOME/bin:$PATH
 # 删除默认 webapps
 RUN rm -rf $CATALINA_HOME/webapps/*
 
-# 安装系统依赖及 Java SSL 证书更新工具
+# 安装系统依赖、Java SSL 证书更新工具、Docker CLI（供 GC 调用 docker exec）
 RUN apt-get update && \
-    apt-get install -y ca-certificates-java libyaml-perl libfile-slurp-perl unzip wget && \
+    apt-get install -y ca-certificates-java libyaml-perl libfile-slurp-perl unzip wget docker.io && \
     update-ca-certificates -f && \
     rm -rf /var/lib/apt/lists/*
 
@@ -26,24 +26,9 @@ COPY web-app/WEB-INF/config.yml /conf/config.yml
 COPY tomcat/start.sh /usr/local/bin/start.sh
 COPY tomcat/yml.pl /usr/local/bin/yml.pl
 
-WORKDIR /usr/local/app
-
-# 复制 Grails 项目源码
-COPY grailsw application.properties ./
-COPY wrapper ./wrapper
-COPY grails-app/conf/BuildConfig.groovy ./grails-app/conf/
-COPY grails-app/controllers/docker/registry/web/RepositoryController.groovy ./grails-app/controllers/docker/registry/web/RepositoryController.groovy
-ADD . ./
-
-# ⚙️ 刷新 Grails 依赖 & 构建 WAR
-RUN ./grailsw refresh-dependencies && \
-    ./grailsw war ROOT.war && \
-    cp ROOT.war $CATALINA_HOME/webapps/ && \
-    cp application.properties $CATALINA_HOME/ && \
-    # 清理缓存
-    rm -rf /usr/local/app && \
-    rm -rf /root/.grails && \
-    rm -rf /root/.m2
+# 使用预编译 WAR（配合 .dockerignore）
+COPY ROOT.war $CATALINA_HOME/webapps/
+COPY application.properties $CATALINA_HOME/
 
 WORKDIR $CATALINA_HOME
 VOLUME /data
