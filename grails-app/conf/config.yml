@@ -4,6 +4,10 @@ registry:
 # Docker registry url
   url: 'http://localhost:5001/v2/'
   name: 'hub.devspire.com.au'
+  gc:
+    command: ''
+    timeout:
+      seconds: 300
   auth:
     enabled: true
     #issuer: 'xxx'

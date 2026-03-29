@@ -14,6 +14,13 @@ registry:
   readonly: true
   # Docker registry fqdn
   name: 'localhost:5000'
+  # Registry GC command (executed inside registry-web container)
+  # Example: /bin/registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
+  gc:
+    command: ''
+    # Kill GC process if it exceeds timeout seconds
+    timeout:
+      seconds: 300
   # Authentication settings
   auth:
     # Enable authentication

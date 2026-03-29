@@ -1,7 +1,10 @@
 package docker.registry.web
 
+import grails.converters.JSON
 import groovy.json.JsonSlurper
 import org.springframework.beans.factory.annotation.Value
+
+import java.util.concurrent.TimeUnit
 
 class RepositoryController {
   @Value('${registry.readonly}')
@@ -13,6 +16,12 @@ class RepositoryController {
 
   @Value('${registry.gc.command:}')
   String gcCommand
+
+  @Value('${registry.gc.timeout.seconds:300}')
+  int gcTimeoutSeconds
+
+  private static final Object GC_LOCK = new Object()
+  private static volatile boolean gcRunning = false
 
   def restService
   def authService
@@ -447,52 +456,145 @@ class RepositoryController {
   def runGc() {
     String name = params.id.decodeURL()
 
-    if (readonly) {
+    def validation = validateGcRequest(name)
+    if (validation) {
       flash.success = false
-      flash.message = "Readonly mode! GC operation requires write-enabled admin mode."
+      flash.message = validation
       flash.deleteAction = true
       redirect action: 'tags', id: params.id
       return
     }
 
-    if (!authService.checkLocalDeletePermissions(name)) {
-      flash.success = false
-      flash.message = "GC not allowed! Current user does not have ui-delete permission."
-      flash.deleteAction = true
-      redirect action: 'tags', id: params.id
-      return
-    }
-
-    if (!gcCommand) {
-      flash.success = false
-      flash.message = "GC command is not configured. Set REGISTRY_GC_COMMAND to execute registry garbage-collect automatically."
-      flash.deleteAction = true
-      redirect action: 'tags', id: params.id
-      return
+    synchronized (GC_LOCK) {
+      if (gcRunning) {
+        flash.success = false
+        flash.message = "GC is already running. Please wait for current run to finish."
+        flash.deleteAction = true
+        redirect action: 'tags', id: params.id
+        return
+      }
+      gcRunning = true
     }
 
     try {
-      log.info "Executing GC command: ${gcCommand}"
-      def proc = ["/bin/sh", "-lc", gcCommand].execute()
-      def stdout = new StringBuffer()
-      def stderr = new StringBuffer()
-      proc.consumeProcessOutput(stdout, stderr)
-      proc.waitFor()
-      def exit = proc.exitValue()
-      if (exit == 0) {
-        flash.success = true
-        flash.message = "GC executed successfully for ${name}.\n${stdout.toString().trim()}"
-      } else {
-        flash.success = false
-        flash.message = "GC failed for ${name} (exit ${exit}).\n${stderr.toString().trim()}"
+      def result = executeGc(name)
+      flash.success = result.success
+      flash.message = result.message
+    } finally {
+      synchronized (GC_LOCK) {
+        gcRunning = false
       }
-    } catch (e) {
-      flash.success = false
-      flash.message = "GC execution error for ${name}: ${e.message}"
-      log.warn 'GC execution error', e
     }
 
     flash.deleteAction = true
     redirect action: 'tags', id: params.id
+  }
+
+  def runGcApi() {
+    response.contentType = 'application/json;charset=UTF-8'
+    String name = params.id?.decodeURL()
+
+    def validation = validateGcRequest(name)
+    if (validation) {
+      response.status = 400
+      render([ok: false, message: validation] as JSON)
+      return
+    }
+
+    synchronized (GC_LOCK) {
+      if (gcRunning) {
+        response.status = 409
+        render([ok: false, message: 'GC is already running.'] as JSON)
+        return
+      }
+      gcRunning = true
+    }
+
+    try {
+      def result = executeGc(name)
+      response.status = result.success ? 200 : 500
+      render(result as JSON)
+    } finally {
+      synchronized (GC_LOCK) {
+        gcRunning = false
+      }
+    }
+  }
+
+  private String validateGcRequest(String name) {
+    if (!name) {
+      return 'Missing repository id.'
+    }
+
+    if (readonly) {
+      return 'Readonly mode! GC operation requires write-enabled admin mode.'
+    }
+
+    if (!authService.checkLocalDeletePermissions(name)) {
+      return 'GC not allowed! Current user does not have ui-delete permission.'
+    }
+
+    if (!gcCommand?.trim()) {
+      return 'GC command is not configured. Set REGISTRY_GC_COMMAND to execute registry garbage-collect automatically.'
+    }
+
+    return null
+  }
+
+  private Map executeGc(String name) {
+    try {
+      log.info "Executing GC command: ${gcCommand}"
+      def proc = ['/bin/sh', '-lc', gcCommand].execute()
+      def stdout = new StringBuffer()
+      def stderr = new StringBuffer()
+      proc.consumeProcessOutput(stdout, stderr)
+
+      def finished = proc.waitFor(gcTimeoutSeconds, TimeUnit.SECONDS)
+      if (!finished) {
+        proc.destroyForcibly()
+        return [
+          ok: false,
+          success: false,
+          message: "GC timed out for ${name} after ${gcTimeoutSeconds}s.",
+          exit: null,
+          stdout: stdout.toString().trim(),
+          stderr: (stderr.toString().trim() ?: 'process timeout')
+        ]
+      }
+
+      def exit = proc.exitValue()
+      def out = stdout.toString().trim()
+      def err = stderr.toString().trim()
+
+      if (exit == 0) {
+        return [
+          ok: true,
+          success: true,
+          message: "GC executed successfully for ${name}." + (out ? "\n${out}" : ''),
+          exit: exit,
+          stdout: out,
+          stderr: err
+        ]
+      }
+
+      return [
+        ok: false,
+        success: false,
+        message: "GC failed for ${name} (exit ${exit})." + (err ? "\n${err}" : ''),
+        exit: exit,
+        stdout: out,
+        stderr: err
+      ]
+    } catch (e) {
+      log.warn 'GC execution error', e
+      return [
+        ok: false,
+        success: false,
+        message: "GC execution error for ${name}: ${e.message}",
+        exit: null,
+        stdout: '',
+        stderr: e.message
+      ]
+    }
   }
 }
