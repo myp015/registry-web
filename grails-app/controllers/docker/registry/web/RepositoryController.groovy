@@ -566,6 +566,8 @@ class RepositoryController {
       def out = stdout.toString().trim()
       def err = stderr.toString().trim()
 
+      log.info "GC finished for ${name}: exit=${exit}, stdout='${out}', stderr='${err}'"
+
       if (exit == 0) {
         return [
           ok: true,

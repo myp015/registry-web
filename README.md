@@ -143,6 +143,63 @@ based on IP and image name [glob matching](https://github.com/mkuchin/docker-reg
 For example **read-all** role matches any IP and any image name with glob `*` and grants `pull` permission and
 **write-all** role grants `pull+push` permission for any IP and any image name. 
 
+### Registry GC (Garbage Collection) in UI
+
+`registry-web` supports triggering backend registry GC from the tags page (`Run GC`).
+
+#### Configuration
+
+Add GC command in `config.yml`:
+
+```yaml
+registry:
+  gc:
+    # SAFE (recommended)
+    command: /bin/registry garbage-collect /etc/docker/registry/config.yml
+    timeout:
+      seconds: 300
+```
+
+Or use environment variables:
+
+- `REGISTRY_GC_COMMAND`
+- `REGISTRY_GC_TIMEOUT_SECONDS`
+
+#### Multi-arch safety warning (important)
+
+For multi-arch images (manifest list / OCI index), **do not** use `--delete-untagged` by default.
+
+Risky command example:
+
+```bash
+/bin/registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
+```
+
+This may remove child platform manifests (`linux/amd64`, `linux/arm64`) while tag/index still exists,
+causing UI entries with `0 layers / 0 size` or pull failures.
+
+#### Running GC with docker exec
+
+If your command uses `docker exec` from inside `registry-web`, make sure:
+
+1. Image contains Docker CLI
+2. `/var/run/docker.sock` is mounted into `registry-web`
+3. Target registry container name in command is correct
+
+Example command:
+
+```bash
+/usr/bin/docker exec registry /bin/registry garbage-collect /etc/docker/registry/config.yml
+```
+
+#### How to verify GC result
+
+- UI flash message should show success/failure
+- Logs include explicit exit code now:
+  - `Executing GC command: ...`
+  - `GC finished for <repo>: exit=<code>, stdout='...', stderr='...'`
+- Optional API check: `POST /repo/runGcApi/<repoId>` returns JSON with `ok/success/exit/stdout/stderr`
+
 ### [Configuration reference](https://github.com/mkuchin/docker-registry-web/blob/master/web-app/WEB-INF/config.yml)
 
 ### [Docker Compose configuration examples](https://github.com/mkuchin/docker-registry-web/tree/master/examples)

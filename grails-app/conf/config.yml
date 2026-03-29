@@ -5,6 +5,8 @@ registry:
   url: 'http://localhost:5001/v2/'
   name: 'hub.devspire.com.au'
   gc:
+    # Safe example (recommended): /bin/registry garbage-collect /etc/docker/registry/config.yml
+    # WARNING: avoid --delete-untagged with multi-arch images, it may remove child manifests.
     command: ''
     timeout:
       seconds: 300

@@ -15,7 +15,8 @@ registry:
   # Docker registry fqdn
   name: 'localhost:5000'
   # Registry GC command (executed inside registry-web container)
-  # Example: /bin/registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
+  # Safe example (recommended): /bin/registry garbage-collect /etc/docker/registry/config.yml
+  # WARNING: avoid --delete-untagged with multi-arch images, it may remove child manifests.
   gc:
     command: ''
     # Kill GC process if it exceeds timeout seconds
