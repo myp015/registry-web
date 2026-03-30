@@ -25,13 +25,12 @@
     <p>Do you want to proceed?</p>
 </g:modal>
 
-<g:modal id="deleteDigest" title="Confirm Delete Image (Digest)" fields="['repo', 'tag', 'digest']" okText="Delete Image" okClass="btn-danger">
-    <p>You are about to delete image manifest by digest.</p>
+<g:modal id="deleteDigest" title="Confirm Delete Image (All Related Tags/Manifests)" fields="['repo', 'digest']" okText="Delete Image" okClass="btn-danger">
+    <p>You are about to delete all tag/manifests referencing this image digest in current repository.</p>
     <p><strong>Repository:</strong> <code id="repo"></code></p>
-    <p><strong>Tag:</strong> <code id="tag"></code></p>
-    <p><strong>Digest:</strong> <code id="digest"></code></p>
-    <p>This deletes registry metadata immediately. Disk blobs are removed only after GC.</p>
-    <p><strong>Warning:</strong> For multi-arch tags (manifest list/index), deleting a child digest directly may break tags. Prefer <em>Delete Tag</em>.</p>
+    <p><strong>Image Digest:</strong> <code id="digest"></code></p>
+    <p><strong>Warning:</strong> This will remove the whole image references (may include multi-arch tags) and is irreversible.</p>
+    <p>Disk blobs are removed only after GC.</p>
 </g:modal>
 
 <g:modal id="runGc" title="Confirm Run Registry Garbage Collection" fields="['repo']" okText="Run GC" okClass="btn-warning">
@@ -85,7 +84,7 @@
                 <% def renderedDeleteImageDigests = [] as Set %>
                 <g:each in="${tags}" var="tag">
                     <g:if test="${tag.exists}">
-                        <% def imageDigest = (tag.manifestDigest ?: tag.digest) %>
+                        <% def imageDigest = tag.imageDigest %>
                         <tr>
                             <td>${tag.id ?: '-'}</td>
                             <td>
@@ -113,9 +112,8 @@
                                         <% renderedDeleteImageDigests << imageDigest %>
                                         <a href="#"
                                            data-repo="${params.id.decodeURL()}"
-                                           data-tag="${tag.name}"
                                            data-digest="${imageDigest}"
-                                           data-href="${g.createLink(action: 'deleteDigest', params: [id: params.id, name: tag.name, digest: imageDigest])}"
+                                           data-href="${g.createLink(action: 'deleteDigest', params: [id: params.id, digest: imageDigest])}"
                                            data-toggle="modal" data-target="#deleteDigest">Delete Image</a>
                                     </g:if>
                                     <g:else>-</g:else>

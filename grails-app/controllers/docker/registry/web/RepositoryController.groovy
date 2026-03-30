@@ -100,18 +100,18 @@ class RepositoryController {
             def childResp = childDigest ? restService.get("${name}/manifests/${childDigest}", restService.generateAccess(name), true) : null
             def childOk = childResp?.statusCode?.'2xxSuccessful'
             def childJson = childOk ? childResp.json : null
-            buildTagEntry(name, tag, childJson, true, platformString(child?.platform), childJson?.config?.digest, childDigest)
+            buildTagEntry(name, tag, childJson, true, platformString(child?.platform), childJson?.config?.digest, childDigest, childJson?.config?.digest)
           }
         }
       }
 
       // Single-arch or fallback: one row
       def resolvedManifest = resolveSchema2Manifest(name, json)
-      [buildTagEntry(name, tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), resolvedManifest?.config?.digest, manifestDigestFromHeaders(manifestResp))]
+      [buildTagEntry(name, tag, resolvedManifest, true, detectPlatformFromManifest(json, resolvedManifest), resolvedManifest?.config?.digest, manifestDigestFromHeaders(manifestResp), resolvedManifest?.config?.digest)]
     }
   }
 
-  private Map buildTagEntry(String repoName, String tag, def manifestJson, boolean exists, String platform = '-', String digest = null, String manifestDigest = null) {
+  private Map buildTagEntry(String repoName, String tag, def manifestJson, boolean exists, String platform = '-', String digest = null, String manifestDigest = null, String imageDigest = null) {
     def topLayer
     def size = 0
     def layers = [:]
@@ -157,6 +157,7 @@ class RepositoryController {
       platform  : platform ?: '-',
       digest    : effectiveDigest,
       manifestDigest: effectiveManifestDigest,
+      imageDigest: imageDigest,
       digestShort: shortDigest(effectiveDigest)
     ]
   }
@@ -338,6 +339,14 @@ class RepositoryController {
     return fallback
   }
 
+  private Set<String> findTagsByImageDigest(String name, String imageDigest) {
+    if (!name || !imageDigest) return [] as Set
+    def entries = getTags(name, getTagList(name))
+    entries.findAll { it?.exists && it?.imageDigest == imageDigest }
+        .collect { it.name as String }
+        .toSet()
+  }
+
   private String renderCmdFromHistoryEntry(def json) {
     def cmdList = json?.container_config?.Cmd ?: json?.config?.Cmd
     if (cmdList instanceof Collection && cmdList) {
@@ -489,25 +498,55 @@ class RepositoryController {
 
   def deleteDigest() {
     String name = params.id.decodeURL()
-    def tag = params.name
-    def digest = params.digest
+    def imageDigest = params.digest
 
     if (!readonly) {
-      if (!digest) {
-        flash.message = "Missing digest for delete operation"
+      if (!imageDigest) {
+        flash.message = "Missing image digest for delete operation"
       } else if (authService.checkLocalDeletePermissions(name)) {
-        // For tags backed by manifest list/index, digest may be child image-manifest digest.
-        // Deleting child digest while tag still points to index can create empty/broken rows.
-        def parentTags = findTagsReferencingChildManifestDigest(name, digest)
-        if ((parentTags?.size() ?: 0) > 0) {
-          flash.message = "Cannot delete child manifest ${digest}: it is still referenced by tag(s) ${parentTags.join(', ')} via manifest list/index. Delete those tags first (or delete the index digest)."
-        } else {
-          log.info "Deleting manifest by digest: ${digest} from ${name}"
-          def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
-          if (!result.deleted) {
-            def text = deleteErrorText(result)
-            flash.message = "Error deleting ${name}@${digest}: ${text}"
+        def errors = []
+        def deletedTags = [] as Set
+        def deletedDigests = [] as Set
+
+        // 1) Delete all tags that point to this image digest (all platforms/rows)
+        def tagsToDelete = findTagsByImageDigest(name, imageDigest)
+        tagsToDelete.each { t ->
+          def byTag = restService.delete("${name}/manifests/${t}", restService.generateAccess(name, '*'), true)
+          if (byTag.deleted) {
+            deletedTags << t
+          } else {
+            // fallback: resolve manifest digest by header and delete by digest
+            def m = restService.get("${name}/manifests/${t}", restService.generateAccess(name), true)
+            def md = manifestDigestFromHeaders(m)
+            if (md) {
+              def byDigest = restService.delete("${name}/manifests/${md}", restService.generateAccess(name, '*'))
+              if (byDigest.deleted) {
+                deletedTags << t
+                deletedDigests << md
+              } else {
+                errors << "${t}: ${deleteErrorText(byDigest)}"
+              }
+            } else {
+              errors << "${t}: cannot resolve manifest digest"
+            }
           }
+        }
+
+        // 2) Also try deleting child-manifest digest directly when safe (may already be unreferenced)
+        def parentTags = findTagsReferencingChildManifestDigest(name, imageDigest)
+        if ((parentTags?.size() ?: 0) == 0) {
+          def delChild = restService.delete("${name}/manifests/${imageDigest}", restService.generateAccess(name, '*'))
+          if (delChild.deleted) {
+            deletedDigests << imageDigest
+          }
+        }
+
+        if (errors) {
+          flash.message = "Error deleting image ${name}@${imageDigest}: ${errors.join('; ')}"
+        } else if (!(deletedTags || deletedDigests)) {
+          flash.message = "No related tags/manifests found for image digest ${imageDigest}."
+        } else {
+          flash.message = "Delete image request accepted for ${name}@${imageDigest}. Deleted tags: ${deletedTags ? deletedTags.join(', ') : '-'}; deleted manifests: ${deletedDigests ? deletedDigests.join(', ') : '-'}"
         }
       } else {
         log.warn 'Delete by digest not allowed!'
@@ -519,9 +558,9 @@ class RepositoryController {
     }
 
     flash.deleteAction = true
-    flash.success = !flash.message
-    if (!flash.message) {
-      flash.message = "Delete image request accepted for ${name}:${tag} (${digest}). Blob files are removed after registry garbage-collect (GC)."
+    flash.success = !flash.message?.startsWith('Error')
+    if (flash.success && !flash.message) {
+      flash.message = "Delete image request accepted for ${name}@${imageDigest}. Blob files are removed after registry garbage-collect (GC)."
     }
     redirect action: 'tags', id: params.id
   }
