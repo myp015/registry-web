@@ -31,6 +31,7 @@
     <p><strong>Tag:</strong> <code id="tag"></code></p>
     <p><strong>Digest:</strong> <code id="digest"></code></p>
     <p>This deletes registry metadata immediately. Disk blobs are removed only after GC.</p>
+    <p><strong>Warning:</strong> For multi-arch tags (manifest list/index), deleting a child digest directly may break tags. Prefer <em>Delete Tag</em>.</p>
 </g:modal>
 
 <g:modal id="runGc" title="Confirm Run Registry Garbage Collection" fields="['repo']" okText="Run GC" okClass="btn-warning">

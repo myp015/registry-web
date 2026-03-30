@@ -305,6 +305,39 @@ class RepositoryController {
     }
   }
 
+  private List<String> findTagsReferencingChildManifestDigest(String name, String childDigest) {
+    if (!name || !childDigest) return []
+    def tags = getTagList(name)
+    tags.findAll { t ->
+      try {
+        def r = restService.get("${name}/manifests/${t}", restService.generateAccess(name), true)
+        def j = r?.json
+        isManifestIndex(j) && (j.manifests ?: []).any { it?.digest == childDigest }
+      } catch (ignored) {
+        false
+      }
+    }
+  }
+
+  private String deleteErrorText(def result, String fallback = 'delete failed') {
+    try {
+      def code = result?.response?.json?.errors?.getAt(0)?.code
+      def msg = result?.response?.json?.errors?.getAt(0)?.message
+      if (code == 'UNSUPPORTED') {
+        return "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>."
+      }
+      if (msg) return msg.toString()
+    } catch (ignored) {
+      // ignore
+    }
+
+    def status = result?.response?.statusCode
+    def text = result?.text ?: result?.response?.text
+    if (text) return text.toString()
+    if (status) return "status=${status}"
+    return fallback
+  }
+
   private String renderCmdFromHistoryEntry(def json) {
     def cmdList = json?.container_config?.Cmd ?: json?.config?.Cmd
     if (cmdList instanceof Collection && cmdList) {
@@ -442,14 +475,7 @@ class RepositoryController {
     log.info "Fallback to digest delete: ${name}@${digest}"
     def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
     if (!result.deleted) {
-      def text = ''
-      try {
-        boolean unsupported = result.response.json.errors[0].code == 'UNSUPPORTED'
-        text = unsupported ? "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>." : result.text
-      } catch (e) {
-        log.warn "Error deleting", e
-        text = result.text
-      }
+      def text = deleteErrorText(result)
       flash.message = "Error deleting ${name}:${tag}: ${text}"
     }
 
@@ -470,18 +496,18 @@ class RepositoryController {
       if (!digest) {
         flash.message = "Missing digest for delete operation"
       } else if (authService.checkLocalDeletePermissions(name)) {
-        log.info "Deleting manifest by digest: ${digest} from ${name}"
-        def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
-        if (!result.deleted) {
-          def text = ''
-          try {
-            boolean unsupported = result.response.json.errors[0].code == 'UNSUPPORTED'
-            text = unsupported ? "Deletion disabled in registry, <a href='https://docs.docker.com/registry/configuration/#delete'>more info</a>." : result.text
-          } catch (e) {
-            log.warn "Error deleting by digest", e
-            text = result.text
+        // For tags backed by manifest list/index, digest may be child image-manifest digest.
+        // Deleting child digest while tag still points to index can create empty/broken rows.
+        def parentTags = findTagsReferencingChildManifestDigest(name, digest)
+        if ((parentTags?.size() ?: 0) > 0) {
+          flash.message = "Cannot delete child manifest ${digest}: it is still referenced by tag(s) ${parentTags.join(', ')} via manifest list/index. Delete those tags first (or delete the index digest)."
+        } else {
+          log.info "Deleting manifest by digest: ${digest} from ${name}"
+          def result = restService.delete("${name}/manifests/${digest}", restService.generateAccess(name, '*'))
+          if (!result.deleted) {
+            def text = deleteErrorText(result)
+            flash.message = "Error deleting ${name}@${digest}: ${text}"
           }
-          flash.message = "Error deleting ${name}@${digest}: ${text}"
         }
       } else {
         log.warn 'Delete by digest not allowed!'
