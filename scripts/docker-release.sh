@@ -4,16 +4,15 @@ set -euo pipefail
 # Generic Docker multi-arch build & push helper.
 # Suitable for any project by configuring flags.
 #
-# Examples:
-#   scripts/docker-release.sh \
-#     --image docker.ainas.cc:5200/ainas/registry-web \
-#     --build-cmd "docker run --rm -v $PWD:/work -w /work gradle:7.6.4-jdk8 bash -lc './grailsw clean && ./grailsw -Dgrails.env=production war && cp -f target/docker-registry-web-0.1.3-SNAPSHOT.war ROOT.war'" \
-#     --artifact ROOT.war
-#
-#   scripts/docker-release.sh \
-#     --image docker.ainas.cc:5200/demo/my-app \
-#     --build-cmd "npm ci && npm run build" \
-#     --artifact dist
+# Extras in this version:
+# - After push, export per-platform archives (.tar.gz) for each pushed tag.
+# - Default archive paths:
+#   amd64 -> /root/clouddrive2/media/Dockerimages/Images_amd64/
+#   arm64 -> /root/clouddrive2/media/Dockerimages/Images_arm64/
+# - Archive name rule:
+#   remove registry prefix + replace '/' and ':' with '_'
+#   e.g. docker.ainas.cc:5200/ainas/registry-web:latest
+#        -> ainas_registry-web_latest.tar.gz
 
 IMAGE=""
 VERSION_TAG=""
@@ -26,6 +25,9 @@ ATTEMPTS=6
 SLEEP_SECONDS=20
 PUSH_LATEST=1
 VERIFY_PULL=0
+EXPORT_ARCHIVES=1
+EXPORT_AMD64_DIR="/root/clouddrive2/media/Dockerimages/Images_amd64"
+EXPORT_ARM64_DIR="/root/clouddrive2/media/Dockerimages/Images_arm64"
 
 usage() {
   cat <<'USAGE'
@@ -46,6 +48,9 @@ Options:
   --sleep <sec>             Sleep between retries (default: 20)
   --no-latest               Do not push latest tag
   --verify-pull             After success, run docker pull for pushed tags
+  --no-export-archives      Disable platform tar.gz export after push
+  --export-amd64-dir <dir>  Output dir for amd64 tar.gz (default: /root/clouddrive2/media/Dockerimages/Images_amd64)
+  --export-arm64-dir <dir>  Output dir for arm64 tar.gz (default: /root/clouddrive2/media/Dockerimages/Images_arm64)
   -h, --help                Show this help
 USAGE
 }
@@ -63,6 +68,43 @@ registry_from_image() {
   fi
 }
 
+archive_name_from_tag() {
+  local fullTag="$1"
+  local registry="$2"
+  local s="$fullTag"
+
+  if [[ -n "$registry" && "$s" == "$registry/"* ]]; then
+    s="${s#${registry}/}"
+  fi
+
+  # replace / and : with _
+  s="${s//\//_}"
+  s="${s//:/_}"
+  printf '%s.tar.gz' "$s"
+}
+
+export_archives_for_tag() {
+  local fullTag="$1"
+  local registry="$2"
+  local archiveName
+  archiveName="$(archive_name_from_tag "$fullTag" "$registry")"
+
+  mkdir -p "$EXPORT_AMD64_DIR" "$EXPORT_ARM64_DIR"
+
+  local outAmd64="$EXPORT_AMD64_DIR/$archiveName"
+  local outArm64="$EXPORT_ARM64_DIR/$archiveName"
+
+  echo "== Export amd64 archive: $outAmd64 =="
+  docker pull --platform linux/amd64 "$fullTag"
+  docker save "$fullTag" | gzip -c > "$outAmd64"
+
+  echo "== Export arm64 archive: $outArm64 =="
+  docker pull --platform linux/arm64 "$fullTag"
+  docker save "$fullTag" | gzip -c > "$outArm64"
+
+  ls -lh "$outAmd64" "$outArm64"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2 ;;
@@ -76,6 +118,9 @@ while [[ $# -gt 0 ]]; do
     --sleep) SLEEP_SECONDS="$2"; shift 2 ;;
     --no-latest) PUSH_LATEST=0; shift ;;
     --verify-pull) VERIFY_PULL=1; shift ;;
+    --no-export-archives) EXPORT_ARCHIVES=0; shift ;;
+    --export-amd64-dir) EXPORT_AMD64_DIR="$2"; shift 2 ;;
+    --export-arm64-dir) EXPORT_ARM64_DIR="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown arg: $1"; usage; exit 1 ;;
   esac
@@ -89,6 +134,7 @@ fi
 
 require_cmd docker
 require_cmd curl
+require_cmd gzip
 
 if [[ -z "$VERSION_TAG" ]]; then
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -106,6 +152,7 @@ echo "CONTEXT=$CONTEXT"
 echo "DOCKERFILE=$DOCKERFILE"
 echo "ATTEMPTS=$ATTEMPTS"
 echo "SLEEP_SECONDS=$SLEEP_SECONDS"
+echo "EXPORT_ARCHIVES=$EXPORT_ARCHIVES"
 
 if [[ -n "$BUILD_CMD" ]]; then
   echo "== Step 1: project build command =="
@@ -187,14 +234,21 @@ fi
 
 echo "== Step 4: digests =="
 for t in "${TAGS[@]}"; do
-  digest="$(docker buildx imagetools inspect "$t" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
-  echo "$t -> $digest"
+  echo "-- $t"
+  docker buildx imagetools inspect "$t" || true
 done
 
 if [[ "$VERIFY_PULL" -eq 1 ]]; then
   echo "== Step 5: docker pull verify =="
   for t in "${TAGS[@]}"; do
     docker pull "$t"
+  done
+fi
+
+if [[ "$EXPORT_ARCHIVES" -eq 1 ]]; then
+  echo "== Step 6: export per-platform tar.gz archives =="
+  for t in "${TAGS[@]}"; do
+    export_archives_for_tag "$t" "$REGISTRY"
   done
 fi
 

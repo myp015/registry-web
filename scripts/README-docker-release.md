@@ -45,6 +45,25 @@ scripts/docker-release.sh \
 - `--platforms <list>`：默认 `linux/amd64,linux/arm64`
 - `--no-latest`：仅推版本标签
 - `--verify-pull`：推送成功后再 `docker pull` 验证
+- `--no-export-archives`：关闭导出 tar.gz（默认开启）
+- `--export-amd64-dir <dir>`：amd64 包输出目录（默认 `/root/clouddrive2/media/Dockerimages/Images_amd64`）
+- `--export-arm64-dir <dir>`：arm64 包输出目录（默认 `/root/clouddrive2/media/Dockerimages/Images_arm64`）
+
+## 导出命名规则
+
+以完整镜像标签去掉私有库前缀后，替换 `/` 和 `:` 为 `_`，并追加 `.tar.gz`。
+
+示例：
+
+- `docker.ainas.cc:5200/ainas/registry-web:latest`
+- 导出文件名：`ainas_registry-web_latest.tar.gz`
+
+两个架构文件名相同，只是目录不同：
+
+- amd64：`/root/clouddrive2/media/Dockerimages/Images_amd64/ainas_registry-web_latest.tar.gz`
+- arm64：`/root/clouddrive2/media/Dockerimages/Images_arm64/ainas_registry-web_latest.tar.gz`
+
+如果目标文件已存在，会直接覆盖。该行为符合你的要求。
 
 ## 注意
 
